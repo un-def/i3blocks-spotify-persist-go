@@ -1,8 +1,10 @@
 package main
 
 import (
-	"fmt"
+	"os"
+	"regexp"
 	"strings"
+	"text/template"
 
 	"github.com/godbus/dbus"
 )
@@ -12,20 +14,39 @@ const objectPath = "/org/mpris/MediaPlayer2"
 const playerInterface = "org.mpris.MediaPlayer2.Player"
 
 var statusToIcon = map[string]string{
-	"Playing": "",
-	"Paused":  "",
-	"Stopped": "",
+	"Playing": "\uf04b",
+	"Paused":  "\uf04c",
+	"Stopped": "\uf04d",
 }
 
-// TrackInfo ...
-type TrackInfo struct {
-	artist []string
-	title  string
+var playbackInfoFormatPlaceholders = map[string]string{
+	"S": "{{.Status}}",
+	"I": "{{.StatusIcon}}",
+	"A": "{{.Artist}}",
+	"T": "{{.Title}}",
+	"%": "%",
+}
+
+var playbackInfoFormatRegexp = regexp.MustCompile(`%[SIAT%]`)
+
+var playbackInfoFormat = `%I %A — %T [%S]`
+
+// PlaybackInfo ...
+type PlaybackInfo struct {
+	Status string
+	Artist string
+	Title  string
+}
+
+// StatusIcon ...
+func (playbackInfo PlaybackInfo) StatusIcon() string {
+	return statusToIcon[playbackInfo.Status]
 }
 
 // Spotify ...
 type Spotify struct {
 	*dbus.Object
+	playbackInfoTemplate *template.Template
 }
 
 // Get ...
@@ -37,43 +58,45 @@ func (spotify *Spotify) get(propName string) interface{} {
 	return variant.Value()
 }
 
-// GetPlaybackStatus ...
-func (spotify *Spotify) GetPlaybackStatus() string {
-	return spotify.get("PlaybackStatus").(string)
-}
-
-// GetTrackInfo ...
-func (spotify *Spotify) GetTrackInfo() TrackInfo {
+// GetPlaybackInfo ...
+func (spotify *Spotify) GetPlaybackInfo() PlaybackInfo {
+	status := spotify.get("PlaybackStatus").(string)
 	metadata := spotify.get("Metadata").(map[string]dbus.Variant)
-	artist := metadata["xesam:artist"].Value().([]string)
+	artist := strings.Join(metadata["xesam:artist"].Value().([]string), ", ")
 	title := metadata["xesam:title"].Value().(string)
-	return TrackInfo{
-		artist: artist,
-		title:  title,
+	return PlaybackInfo{
+		Status: status,
+		Artist: artist,
+		Title:  title,
 	}
 }
 
-// ShowInfo ...
-func (spotify *Spotify) ShowInfo(playbackStatus string, trackInfo TrackInfo) {
-	fmt.Printf(
-		"%s %s — %s\n",
-		statusToIcon[playbackStatus],
-		strings.Join(trackInfo.artist, ", "),
-		trackInfo.title,
-	)
+// ShowPlaybackInfo ...
+func (spotify *Spotify) ShowPlaybackInfo(playbackInfo PlaybackInfo) {
+	spotify.playbackInfoTemplate.Execute(os.Stdout, playbackInfo)
 }
 
-// ShowInitialInfo ...
-func (spotify *Spotify) ShowInitialInfo() {
-	plackbackStatus := spotify.GetPlaybackStatus()
-	trackInfo := spotify.GetTrackInfo()
-	spotify.ShowInfo(plackbackStatus, trackInfo)
+// ShowInitialPlaybackInfo ...
+func (spotify *Spotify) ShowInitialPlaybackInfo() {
+	info := spotify.GetPlaybackInfo()
+	spotify.ShowPlaybackInfo(info)
 }
 
 // GetSpotify ...
-func GetSpotify(conn *dbus.Conn) Spotify {
+func GetSpotify(conn *dbus.Conn, playbackInfoFormat string) Spotify {
 	object := conn.Object(busName, objectPath)
-	return Spotify{object.(*dbus.Object)}
+	templateText := playbackInfoFormatRegexp.ReplaceAllStringFunc(
+		playbackInfoFormat,
+		func(r string) string {
+			return playbackInfoFormatPlaceholders[r[1:]]
+		},
+	)
+	templateText += "\n"
+	playbackInfoTemplate := template.Must(template.New("PlaybackInfo").Parse(templateText))
+	return Spotify{
+		object.(*dbus.Object),
+		playbackInfoTemplate,
+	}
 }
 
 func main() {
@@ -81,6 +104,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	spotify := GetSpotify(conn)
-	spotify.ShowInitialInfo()
+	spotify := GetSpotify(conn, playbackInfoFormat)
+	spotify.ShowInitialPlaybackInfo()
 }
