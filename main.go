@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -27,9 +28,9 @@ var playbackInfoFormatPlaceholders = map[string]string{
 	"%": "%",
 }
 
-var playbackInfoFormatRegexp = regexp.MustCompile(`%[SIAT%]`)
+var playbackInfoFormatRegexp = regexp.MustCompile(`%[SIAT%]|[^%]+`)
 
-var playbackInfoFormat = `%I %A — %T [%S]`
+var playbackInfoFormat = `\%% %I %A — "%T" {{ %S }} %%/`
 
 // PlaybackInfo ...
 type PlaybackInfo struct {
@@ -85,18 +86,25 @@ func (spotify *Spotify) ShowInitialPlaybackInfo() {
 // GetSpotify ...
 func GetSpotify(conn *dbus.Conn, playbackInfoFormat string) Spotify {
 	object := conn.Object(busName, objectPath)
-	templateText := playbackInfoFormatRegexp.ReplaceAllStringFunc(
-		playbackInfoFormat,
-		func(r string) string {
-			return playbackInfoFormatPlaceholders[r[1:]]
-		},
-	)
-	templateText += "\n"
-	playbackInfoTemplate := template.Must(template.New("PlaybackInfo").Parse(templateText))
+	playbackInfoTemplate := compilePlaybackInfoTemplate(playbackInfoFormat)
 	return Spotify{
 		object.(*dbus.Object),
 		playbackInfoTemplate,
 	}
+}
+
+func compilePlaybackInfoTemplate(playbackInfoFormat string) *template.Template {
+	var templateText string
+	for _, substr := range playbackInfoFormatRegexp.FindAllString(playbackInfoFormat, -1) {
+		if strings.HasPrefix(substr, "%") {
+			substr = playbackInfoFormatPlaceholders[substr[1:]]
+		} else {
+			substr = "{{" + fmt.Sprintf("%q", substr) + "}}"
+		}
+		templateText += substr
+	}
+	templateText += "\n"
+	return template.Must(template.New("PlaybackInfo").Parse(templateText))
 }
 
 func main() {
